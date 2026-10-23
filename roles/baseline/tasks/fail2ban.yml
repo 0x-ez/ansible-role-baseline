@@ -1,0 +1,23 @@
+---
+# python3-systemd is needed for backend = systemd (24.04 may have no auth.log).
+- name: Install fail2ban
+  ansible.builtin.apt:
+    name:
+      - fail2ban
+      - python3-systemd
+    state: present
+
+- name: Configure sshd jail
+  ansible.builtin.template:
+    src: fail2ban-baseline.local.j2
+    dest: /etc/fail2ban/jail.d/baseline.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: baseline restart fail2ban
+
+- name: Enable and start fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    enabled: true
+    state: started

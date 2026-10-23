@@ -1,0 +1,70 @@
+---
+# The docker package creates this group too; creating it first lets the admin
+# user join it even before (or without) the Docker install, e.g. in Molecule.
+- name: Ensure docker group exists
+  ansible.builtin.group:
+    name: docker
+    system: true
+    state: present
+  when: baseline_docker_enabled | bool
+
+- name: Create admin user with a locked password
+  ansible.builtin.user:
+    name: "{{ baseline_admin_user }}"
+    shell: "{{ baseline_admin_shell }}"
+    groups: "{{ ['sudo'] + (['docker'] if baseline_docker_enabled | bool else []) }}"
+    append: true
+    create_home: true
+    password_lock: true
+    state: present
+
+- name: Grant sudo to admin user
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/90-baseline-{{ baseline_admin_user }}
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s
+
+- name: Check for root authorized_keys
+  ansible.builtin.stat:
+    path: /root/.ssh/authorized_keys
+  register: baseline__root_keys_file
+  when: baseline_admin_ssh_keys | length == 0
+
+- name: Read root authorized_keys
+  ansible.builtin.slurp:
+    src: /root/.ssh/authorized_keys
+  register: baseline__root_keys
+  when:
+    - baseline_admin_ssh_keys | length == 0
+    - baseline__root_keys_file.stat.exists
+
+- name: Select admin authorized keys
+  ansible.builtin.set_fact:
+    baseline__admin_keys: >-
+      {{
+        baseline_admin_ssh_keys
+        if baseline_admin_ssh_keys | length > 0
+        else (baseline__root_keys.content | default('') | b64decode).splitlines()
+             | map('trim') | reject('match', '^(#|$)') | list
+      }}
+
+# Without a key the admin user is unusable and the SSH hardening would leave
+# no way in once root login is disabled - stop here instead.
+- name: Assert at least one admin key is available
+  ansible.builtin.assert:
+    that: baseline__admin_keys | length > 0
+    fail_msg: >-
+      No SSH keys for {{ baseline_admin_user }}: set baseline_admin_ssh_keys or
+      make sure /root/.ssh/authorized_keys exists on the host.
+    quiet: true
+
+- name: Install admin authorized keys
+  ansible.posix.authorized_key:
+    user: "{{ baseline_admin_user }}"
+    key: "{{ baseline__admin_keys | join('\n') }}"
+    exclusive: "{{ baseline_admin_ssh_keys_exclusive | bool }}"
+    manage_dir: true
+    state: present

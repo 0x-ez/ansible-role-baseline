@@ -1,0 +1,11 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    # UFW, sysctl, mounts, Docker-in-Docker and reboots are skipped.
+    baseline_in_container: true
+    baseline_admin_ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMoleculeTestKeyOnlyNotARealKeyxxxxxxxxxxxx molecule@test"
+  roles:
+    - role: baseline

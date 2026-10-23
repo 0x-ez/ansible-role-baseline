@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: baseline
+  namespace: local
+  author: Mael Bomane
+  description: Good-enough security baseline for fresh Ubuntu 22.04/24.04 servers
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - security
+    - hardening
+    - ubuntu
+    - ssh
+    - ufw
+dependencies: []

@@ -1,0 +1,101 @@
+---
+- name: Install apt repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - python3-debian
+    state: present
+    update_cache: true
+    cache_valid_time: "{{ baseline_apt_cache_valid_time }}"
+
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Tailscale apt signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_facts['distribution_release'] }}.noarmor.gpg
+    dest: /etc/apt/keyrings/tailscale.gpg
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add Tailscale apt repository
+  ansible.builtin.deb822_repository:
+    name: tailscale
+    types: [deb]
+    uris: https://pkgs.tailscale.com/stable/ubuntu
+    suites: ["{{ ansible_facts['distribution_release'] }}"]
+    components: [main]
+    signed_by: /etc/apt/keyrings/tailscale.gpg
+    state: present
+  register: baseline__tailscale_repo
+
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: "{{ baseline__tailscale_repo is changed }}"
+
+- name: Enable and start tailscaled
+  ansible.builtin.systemd_service:
+    name: tailscaled
+    enabled: true
+    state: started
+
+- name: Check Tailscale status
+  ansible.builtin.command: tailscale status --json
+  register: baseline__ts_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Record Tailscale state
+  ansible.builtin.set_fact:
+    baseline__ts_running: >-
+      {{ baseline__ts_status.rc == 0
+         and (baseline__ts_status.stdout | from_json).BackendState | default('') == 'Running' }}
+
+- name: Bring Tailscale up
+  ansible.builtin.command:
+    argv: "{{ ['tailscale', 'up', '--authkey=' ~ baseline_tailscale_authkey] + baseline_tailscale_args }}"
+  no_log: true
+  changed_when: true
+  when:
+    - not baseline__ts_running | bool
+    - baseline_tailscale_authkey | length > 0
+  register: baseline__ts_up_result
+
+- name: Wait for Tailscale to report Running
+  ansible.builtin.command: tailscale status --json
+  register: baseline__ts_status_after
+  changed_when: false
+  check_mode: false
+  until: (baseline__ts_status_after.stdout | from_json).BackendState | default('') == 'Running'
+  retries: 10
+  delay: 3
+  when:
+    - not baseline__ts_running | bool
+    - baseline_tailscale_authkey | length > 0
+    - not ansible_check_mode
+
+- name: Report Tailscale not logged in
+  ansible.builtin.debug:
+    msg: >-
+      Tailscale is installed but not logged in and baseline_tailscale_authkey is empty.
+      Run `sudo tailscale up` on the host. SSH stays publicly reachable until then.
+  when:
+    - not baseline__ts_running | bool
+    - baseline_tailscale_authkey | length == 0
+
+- name: Restrict SSH to tailscale0
+  ansible.builtin.import_tasks: _ufw_ssh_tailscale_only.yml
+  vars:
+    baseline__ts_up: "{{ baseline__ts_running | bool or baseline__ts_up_result is changed }}"
+  when:
+    - baseline_firewall_enabled | bool
+    - not baseline_in_container | bool

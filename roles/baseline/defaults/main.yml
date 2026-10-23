@@ -1,0 +1,129 @@
+---
+# ---------------------------------------------------------------------------
+# Feature toggles
+# ---------------------------------------------------------------------------
+baseline_updates_enabled: true
+baseline_docker_enabled: true
+baseline_sysctl_enabled: true
+baseline_users_enabled: true
+baseline_ssh_enabled: true
+baseline_firewall_enabled: true
+baseline_fail2ban_enabled: true
+baseline_secure_shm_enabled: false
+baseline_tailscale_enabled: false
+
+# Set automatically to true when the target is detected as a container
+# (Molecule / CI). Tasks that cannot work in a container (UFW, sysctl,
+# mounts, Docker-in-Docker, reboots) are skipped. Override to force.
+baseline_in_container: >-
+  {{ ansible_facts['virtualization_role'] | default('') == 'guest'
+     and ansible_facts['virtualization_type'] | default('') in ['docker', 'podman', 'container', 'containerd', 'lxc'] }}
+
+# ---------------------------------------------------------------------------
+# updates
+# ---------------------------------------------------------------------------
+baseline_apt_cache_valid_time: 3600
+baseline_base_packages:
+  - vim
+  - curl
+  - htop
+baseline_extra_packages: []
+# Reboot when /var/run/reboot-required exists after upgrades.
+baseline_reboot_if_required: false
+baseline_reboot_timeout: 600
+
+# ---------------------------------------------------------------------------
+# docker
+# ---------------------------------------------------------------------------
+baseline_docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+# Opt-in: install DOCKER-USER rules (ufw-docker approach) so UFW also filters
+# traffic to Docker-published ports. Read the README before enabling.
+baseline_docker_ufw_fix_enabled: false
+# With the fix enabled, published container ports are closed until allowed
+# here (rendered as `ufw route allow`). Same item format as baseline_ufw_allowed.
+baseline_docker_ufw_routes: []
+  # - { port: "80", proto: tcp, comment: "web container" }
+
+# ---------------------------------------------------------------------------
+# sysctl
+# ---------------------------------------------------------------------------
+baseline_sysctl_file: /etc/sysctl.d/99-baseline.conf
+baseline_sysctl_settings:
+  vm.overcommit_memory: 1
+
+# ---------------------------------------------------------------------------
+# users
+# ---------------------------------------------------------------------------
+baseline_admin_user: nonroot
+baseline_admin_shell: /bin/bash
+baseline_admin_nopasswd: true
+# List of public keys (strings). When empty, root's authorized_keys on the
+# target is copied to the admin user.
+baseline_admin_ssh_keys: []
+# Exclusive: remove keys from the admin user that are not in the list above.
+baseline_admin_ssh_keys_exclusive: false
+
+# ---------------------------------------------------------------------------
+# ssh
+# ---------------------------------------------------------------------------
+baseline_ssh_port: 22
+# "prohibit-password" (default) | "no" | "yes" | "forced-commands-only".
+# "no" requires baseline_admin_login_verified: true (see README).
+baseline_ssh_permit_root_login: prohibit-password
+# Set to true only after confirming you can log in as baseline_admin_user
+# with a key and use sudo. Required for baseline_ssh_permit_root_login: "no".
+baseline_admin_login_verified: false
+# When true and PermitRootLogin is "no", the role also tries
+# `ssh -o BatchMode=yes <admin>@<host> true` from the controller and fails
+# if that does not work. Disable if the controller cannot reach the host
+# directly (bastions, unusual ssh config).
+baseline_ssh_verify_admin_from_controller: true
+# Extra sshd directives rendered into the drop-in, e.g. {MaxAuthTries: 3}.
+baseline_sshd_extra_settings: {}
+
+# ---------------------------------------------------------------------------
+# firewall (UFW)
+# ---------------------------------------------------------------------------
+baseline_ufw_default_incoming: deny
+baseline_ufw_default_outgoing: allow
+baseline_ufw_logging: "low"
+# Each item: {port, proto (tcp|udp|any), from (optional), interface (optional), comment (optional)}
+baseline_ufw_allowed:
+  - { port: "80", proto: tcp, comment: http }
+  - { port: "443", proto: tcp, comment: https }
+  # Examples - restrict databases to a private network instead of opening them:
+  # - { port: "6379", proto: tcp, from: "10.0.0.0/8", comment: redis }
+  # - { port: "5432", proto: tcp, from: "10.0.0.0/8", comment: postgres }
+
+# ---------------------------------------------------------------------------
+# fail2ban
+# ---------------------------------------------------------------------------
+baseline_fail2ban_maxretry: 5
+baseline_fail2ban_findtime: 600
+baseline_fail2ban_bantime: 600
+# Appended to 127.0.0.1/8 ::1
+baseline_fail2ban_ignoreip: []
+
+# ---------------------------------------------------------------------------
+# shm (off by default - noexec /run/shm can break some software)
+# ---------------------------------------------------------------------------
+# On 22.04/24.04 /run/shm no longer exists (it used to be a symlink); POSIX
+# shared memory lives in /dev/shm, so that is what gets hardened.
+baseline_shm_path: /dev/shm
+baseline_shm_opts: defaults,noexec,nosuid,nodev
+
+# ---------------------------------------------------------------------------
+# tailscale
+# ---------------------------------------------------------------------------
+# Provide from Ansible Vault or the environment, never in plain text:
+#   baseline_tailscale_authkey: "{{ lookup('ansible.builtin.env', 'TS_AUTHKEY') }}"
+baseline_tailscale_authkey: ""
+# Extra args for `tailscale up`, e.g. ["--ssh", "--advertise-tags=tag:server"]
+baseline_tailscale_args: []
+# When true, SSH is allowed by UFW only on tailscale0. LOCKOUT RISK: see README.
+baseline_ssh_tailscale_only: false

@@ -1,0 +1,8 @@
+---
+- name: Mount shared memory with noexec,nosuid,nodev
+  ansible.posix.mount:
+    path: "{{ baseline_shm_path }}"
+    src: tmpfs
+    fstype: tmpfs
+    opts: "{{ baseline_shm_opts }}"
+    state: mounted

@@ -1,0 +1,4 @@
+inventory.ini
+group_vars/*/vault.yml
+.ansible/
+.cache/

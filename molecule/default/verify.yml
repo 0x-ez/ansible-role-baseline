@@ -1,0 +1,40 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read effective sshd configuration
+      ansible.builtin.command: sshd -T
+      register: verify_sshd
+      changed_when: false
+
+    - name: Assert sshd hardening
+      ansible.builtin.assert:
+        that:
+          - "'passwordauthentication no' in verify_sshd.stdout_lines"
+          - "'kbdinteractiveauthentication no' in verify_sshd.stdout_lines"
+          - "'permitrootlogin without-password' in verify_sshd.stdout_lines or 'permitrootlogin prohibit-password' in verify_sshd.stdout_lines"
+
+    - name: Check admin user
+      ansible.builtin.getent:
+        database: passwd
+        key: nonroot
+
+    - name: Check sudoers drop-in
+      ansible.builtin.command: visudo -cf /etc/sudoers.d/90-baseline-nonroot
+      changed_when: false
+
+    - name: Check admin can sudo without password
+      ansible.builtin.command: sudo -n -u nonroot sudo -n true
+      changed_when: false
+
+    - name: Check fail2ban sshd jail
+      ansible.builtin.command: fail2ban-client status sshd
+      changed_when: false
+
+    - name: Check needrestart drop-in
+      ansible.builtin.stat:
+        path: /etc/needrestart/conf.d/90-baseline.conf
+      register: verify_nr
+      failed_when: not verify_nr.stat.exists

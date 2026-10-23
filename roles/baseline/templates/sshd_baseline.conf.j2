@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# Named 00-* so it is read before 50-cloud-init.conf: sshd keeps the first
+# value it sees for each keyword.
+{% if baseline_ssh_port | int != 22 %}
+Port {{ baseline_ssh_port }}
+{% endif %}
+PermitRootLogin {{ baseline_ssh_permit_root_login }}
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+{% for key, value in baseline_sshd_extra_settings | dictsort %}
+{{ key }} {{ value }}
+{% endfor %}

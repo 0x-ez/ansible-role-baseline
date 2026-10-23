@@ -1,0 +1,54 @@
+---
+# Handlers run in the order listed here, not the order they were notified.
+
+# --- sshd --------------------------------------------------------------------
+# The template validates the drop-in alone; this checks the merged config
+# (sshd_config + every drop-in) before anything is reloaded.
+- name: Validate full sshd configuration
+  ansible.builtin.command: sshd -t
+  changed_when: false
+  listen:
+    - baseline sshd changed
+    - baseline ssh port changed
+
+# Ubuntu 24.04: ssh.socket owns the listening port. Its sshd-socket-generator
+# reads Port/ListenAddress from sshd_config on daemon-reload, then the socket
+# and the service must be restarted to pick up the new listener. Restarting
+# ssh.service keeps existing sessions (KillMode=process).
+- name: Regenerate ssh.socket listeners
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: baseline__ssh_socket_activated | default(false) | bool
+  listen: baseline ssh port changed
+
+- name: Restart ssh.socket
+  ansible.builtin.systemd_service:
+    name: ssh.socket
+    state: restarted
+  when: baseline__ssh_socket_activated | default(false) | bool
+  listen: baseline ssh port changed
+
+- name: Restart ssh
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: restarted
+  listen: baseline ssh port changed
+
+- name: Reload ssh
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: reloaded
+  listen: baseline sshd changed
+
+# --- ufw ---------------------------------------------------------------------
+- name: Reload ufw
+  community.general.ufw:
+    state: reloaded
+  listen: baseline reload ufw
+
+# --- fail2ban ----------------------------------------------------------------
+- name: Restart fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    state: restarted
+  listen: baseline restart fail2ban

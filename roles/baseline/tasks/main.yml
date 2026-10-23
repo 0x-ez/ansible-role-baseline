@@ -1,0 +1,74 @@
+---
+- name: Assert supported platform and sane variables
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_release'] in ['jammy', 'noble']
+      - baseline_ssh_port | int > 0 and baseline_ssh_port | int < 65536
+      - baseline_ssh_permit_root_login in ['yes', 'no', 'prohibit-password', 'forced-commands-only']
+      - baseline_admin_user | length > 0 and baseline_admin_user != 'root'
+      - not (baseline_ssh_tailscale_only | bool) or (baseline_tailscale_enabled | bool)
+    fail_msg: >-
+      baseline supports Ubuntu 22.04 (jammy) and 24.04 (noble) only, and needs valid
+      baseline_ssh_port / baseline_ssh_permit_root_login / baseline_admin_user values.
+      baseline_ssh_tailscale_only requires baseline_tailscale_enabled.
+    quiet: true
+  tags: [always]
+
+- name: Resolve container detection once
+  ansible.builtin.set_fact:
+    baseline_in_container: "{{ baseline_in_container | bool }}"
+  tags: [always]
+
+- name: Updates
+  ansible.builtin.import_tasks: updates.yml
+  when: baseline_updates_enabled | bool
+  tags: [updates]
+
+- name: Docker
+  ansible.builtin.import_tasks: docker.yml
+  when:
+    - baseline_docker_enabled | bool
+    - not baseline_in_container | bool
+  tags: [docker]
+
+- name: Sysctl
+  ansible.builtin.import_tasks: sysctl.yml
+  when:
+    - baseline_sysctl_enabled | bool
+    - not baseline_in_container | bool
+  tags: [sysctl]
+
+- name: Users
+  ansible.builtin.import_tasks: users.yml
+  when: baseline_users_enabled | bool
+  tags: [users]
+
+- name: SSH
+  ansible.builtin.import_tasks: ssh.yml
+  when: baseline_ssh_enabled | bool
+  tags: [ssh]
+
+- name: Firewall
+  ansible.builtin.import_tasks: firewall.yml
+  when:
+    - baseline_firewall_enabled | bool
+    - not baseline_in_container | bool
+  tags: [firewall]
+
+- name: Fail2ban
+  ansible.builtin.import_tasks: fail2ban.yml
+  when: baseline_fail2ban_enabled | bool
+  tags: [fail2ban]
+
+- name: Shared memory
+  ansible.builtin.import_tasks: shm.yml
+  when:
+    - baseline_secure_shm_enabled | bool
+    - not baseline_in_container | bool
+  tags: [shm]
+
+- name: Tailscale
+  ansible.builtin.import_tasks: tailscale.yml
+  when: baseline_tailscale_enabled | bool
+  tags: [tailscale]

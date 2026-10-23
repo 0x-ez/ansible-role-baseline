@@ -1,0 +1,6 @@
+---
+- name: Apply security baseline
+  hosts: all
+  become: true
+  roles:
+    - role: baseline

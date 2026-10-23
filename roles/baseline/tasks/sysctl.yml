@@ -1,0 +1,11 @@
+---
+- name: Apply kernel parameters
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: "{{ baseline_sysctl_file }}"
+    state: present
+    reload: true
+  loop: "{{ baseline_sysctl_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"

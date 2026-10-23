@@ -1,0 +1,53 @@
+---
+# The needrestart drop-in goes in first so the upgrade below never stops at an
+# interactive "which services should be restarted?" prompt.
+- name: Ensure needrestart drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/needrestart/conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure needrestart for automatic restarts without kernel hints
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/90-baseline.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (baseline role)
+      $nrconf{restart} = 'a';
+      $nrconf{kernelhints} = 0;
+
+- name: Update apt cache and dist-upgrade
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ baseline_apt_cache_valid_time }}"
+    upgrade: dist
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ baseline_base_packages + baseline_extra_packages }}"
+    state: present
+
+- name: Check whether a reboot is required
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: baseline__reboot_required
+
+- name: Reboot when required
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ baseline_reboot_timeout }}"
+    msg: Reboot initiated by Ansible (baseline role) after package upgrades
+  when:
+    - baseline_reboot_if_required | bool
+    - baseline__reboot_required.stat.exists
+    - not baseline_in_container | bool
+
+- name: Report pending reboot
+  ansible.builtin.debug:
+    msg: /var/run/reboot-required exists. Reboot manually or set baseline_reboot_if_required=true.
+  when:
+    - not baseline_reboot_if_required | bool
+    - baseline__reboot_required.stat.exists

@@ -1,0 +1,2 @@
+# {{ ansible_managed }}
+{{ baseline_admin_user }} ALL=(ALL:ALL) {{ 'NOPASSWD: ' if baseline_admin_nopasswd | bool else '' }}ALL

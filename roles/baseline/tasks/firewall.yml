@@ -1,0 +1,98 @@
+---
+- name: Install UFW
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+# --- SSH first: the rule must exist before UFW is enabled ---------------------
+- name: Check whether Tailscale is up
+  ansible.builtin.command: tailscale status --json
+  register: baseline__ts_status_fw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: baseline_ssh_tailscale_only | bool
+
+# Until tailscale0 is actually up, SSH stays reachable publicly; the tailscale
+# tasks restrict it once the tunnel works.
+- name: Allow SSH from anywhere
+  community.general.ufw:
+    rule: allow
+    port: "{{ baseline_ssh_port | string }}"
+    proto: tcp
+    comment: ssh
+  when: >-
+    not baseline_ssh_tailscale_only | bool
+    or baseline__ts_status_fw.rc != 0
+    or (baseline__ts_status_fw.stdout | from_json).BackendState | default('') != 'Running'
+
+- name: Restrict SSH to tailscale0
+  ansible.builtin.import_tasks: _ufw_ssh_tailscale_only.yml
+  vars:
+    baseline__ts_up: >-
+      {{ baseline__ts_status_fw.rc | default(1) == 0
+         and (baseline__ts_status_fw.stdout | from_json).BackendState | default('') == 'Running' }}
+
+# --- Other rules ----------------------------------------------------------------
+- name: Allow configured ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto | default('tcp') }}"
+    from_ip: "{{ item.from | default('any') }}"
+    interface: "{{ item.interface | default(omit) }}"
+    direction: "{{ 'in' if item.interface is defined else omit }}"
+    comment: "{{ item.comment | default(omit) }}"
+  loop: "{{ baseline_ufw_allowed }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto | default('tcp') }}"
+
+- name: Configure Docker/UFW integration (DOCKER-USER chain)
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/after.rules
+    marker: "# {mark} UFW AND DOCKER (baseline)"
+    block: "{{ lookup('ansible.builtin.template', 'ufw-docker-after.rules.j2') }}"
+    owner: root
+    group: root
+    mode: "0640"
+  when:
+    - baseline_docker_ufw_fix_enabled | bool
+    - baseline_docker_enabled | bool
+  notify: baseline reload ufw
+
+- name: Allow routed traffic to published Docker ports
+  community.general.ufw:
+    rule: allow
+    route: true
+    port: "{{ item.port | string }}"
+    proto: "{{ item.proto | default('tcp') }}"
+    from_ip: "{{ item.from | default('any') }}"
+    comment: "{{ item.comment | default(omit) }}"
+  loop: "{{ baseline_docker_ufw_routes }}"
+  loop_control:
+    label: "{{ item.port }}/{{ item.proto | default('tcp') }}"
+  when:
+    - baseline_docker_ufw_fix_enabled | bool
+    - baseline_docker_enabled | bool
+
+# --- Policies and enable ----------------------------------------------------------
+- name: Set UFW logging
+  community.general.ufw:
+    logging: "{{ baseline_ufw_logging }}"
+
+- name: Set UFW default incoming policy
+  community.general.ufw:
+    default: "{{ baseline_ufw_default_incoming }}"
+    direction: incoming
+
+- name: Set UFW default outgoing policy
+  community.general.ufw:
+    default: "{{ baseline_ufw_default_outgoing }}"
+    direction: outgoing
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+
+- name: Apply pending UFW reloads
+  ansible.builtin.meta: flush_handlers

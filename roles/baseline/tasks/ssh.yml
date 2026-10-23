@@ -1,0 +1,143 @@
+---
+- name: Ensure OpenSSH server and UFW are installed
+  ansible.builtin.apt:
+    name: "{{ ['openssh-server'] + (['ufw'] if baseline_firewall_enabled | bool and not baseline_in_container | bool else []) }}"
+    state: present
+
+# sshd -t refuses to run without it, and on socket-activated 24.04 hosts (or in
+# containers) it only appears after the first connection.
+- name: Ensure sshd privilege separation directory exists
+  ansible.builtin.file:
+    path: /run/sshd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Read effective sshd configuration
+  ansible.builtin.command: sshd -T
+  register: baseline__sshd_before
+  changed_when: false
+  check_mode: false
+
+- name: Detect socket-activated sshd (Ubuntu 24.04 default)
+  ansible.builtin.systemd_service:
+    name: ssh.socket
+  register: baseline__ssh_socket
+  failed_when: false
+  check_mode: false
+
+- name: Record current SSH state
+  ansible.builtin.set_fact:
+    baseline__ssh_port_before: "{{ baseline__sshd_before.stdout | regex_search('(?m)^port (\\d+)$', '\\1') | first }}"
+    baseline__ssh_socket_activated: "{{ baseline__ssh_socket.status.ActiveState | default('') == 'active' }}"
+
+# --- Root lockout guard ------------------------------------------------------
+# Runs before the drop-in is written, so a failure leaves sshd untouched.
+- name: Refuse to disable root login before the admin login is verified
+  ansible.builtin.assert:
+    that: baseline_admin_login_verified | bool
+    fail_msg: >-
+      baseline_ssh_permit_root_login is "no" but baseline_admin_login_verified is not true.
+      First run the role with the default ("prohibit-password"), then confirm by hand that
+      `ssh {{ baseline_admin_user }}@{{ ansible_host | default(inventory_hostname) }} sudo -v` works,
+      and only then set baseline_admin_login_verified: true together with
+      baseline_ssh_permit_root_login: "no".
+    quiet: true
+  when: baseline_ssh_permit_root_login == 'no'
+
+- name: Verify admin key login from the controller
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new',
+         '-p', (ansible_port | default(baseline__ssh_port_before)) | string]
+        + (['-i', ansible_ssh_private_key_file] if ansible_ssh_private_key_file is defined else [])
+        + [baseline_admin_user ~ '@' ~ (ansible_host | default(inventory_hostname)),
+           'sudo -n true' if baseline_admin_nopasswd | bool else 'true']
+      }}
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  when:
+    - baseline_ssh_permit_root_login == 'no'
+    - baseline_ssh_verify_admin_from_controller | bool
+    - not baseline_in_container | bool
+
+# --- Configuration -----------------------------------------------------------
+# A port change must be open in UFW before sshd moves, or a host where UFW is
+# already active would drop the reconnect.
+- name: Pre-open the new SSH port in UFW
+  community.general.ufw:
+    rule: allow
+    port: "{{ baseline_ssh_port | string }}"
+    proto: tcp
+    comment: ssh
+  when:
+    - baseline_firewall_enabled | bool
+    - not baseline_in_container | bool
+    - not baseline_ssh_tailscale_only | bool
+    - baseline_ssh_port | string != baseline__ssh_port_before
+
+# Ubuntu's sshd uses the first value it reads for each keyword, and
+# cloud-init ships 50-cloud-init.conf with "PasswordAuthentication yes",
+# so this file must sort before it.
+- name: Install sshd hardening drop-in
+  ansible.builtin.template:
+    src: sshd_baseline.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-baseline.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: sshd -t -f %s
+  notify: baseline sshd changed
+
+- name: Flag SSH port change
+  ansible.builtin.debug:
+    msg: SSH port changes from {{ baseline__ssh_port_before }} to {{ baseline_ssh_port }}
+  changed_when: true
+  when: baseline_ssh_port | string != baseline__ssh_port_before
+  notify: baseline ssh port changed
+
+# Apply sshd changes now, before UFW is enabled, so a broken sshd config can
+# never be combined with a freshly enabled firewall in one run.
+- name: Apply sshd changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Reconnect on the new SSH port
+  when:
+    - baseline_ssh_port | string != baseline__ssh_port_before
+    - not baseline_in_container | bool
+  block:
+    - name: Switch connection to the new SSH port
+      ansible.builtin.set_fact:
+        ansible_port: "{{ baseline_ssh_port | int }}"
+
+    - name: Wait for SSH on the new port
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+- name: Read effective sshd configuration after changes
+  ansible.builtin.command: sshd -T
+  register: baseline__sshd_after
+  changed_when: false
+  check_mode: false
+
+- name: Assert hardening is effective
+  ansible.builtin.assert:
+    that:
+      - "'passwordauthentication no' in baseline__sshd_after.stdout_lines"
+      - "'pubkeyauthentication yes' in baseline__sshd_after.stdout_lines"
+      - "'permitemptypasswords no' in baseline__sshd_after.stdout_lines"
+      - "'kbdinteractiveauthentication no' in baseline__sshd_after.stdout_lines"
+      - "('port ' ~ baseline_ssh_port) in baseline__sshd_after.stdout_lines"
+      - >-
+        baseline__permit_root_login_aliases[baseline_ssh_permit_root_login]
+        | map('regex_replace', '^', 'permitrootlogin ')
+        | intersect(baseline__sshd_after.stdout_lines) | length > 0
+    fail_msg: >-
+      sshd's effective configuration does not match the baseline drop-in. Another file
+      that sorts before 00-baseline.conf, or a Match block, overrides it - check `sshd -T`.
+    quiet: true
+  when: not ansible_check_mode
